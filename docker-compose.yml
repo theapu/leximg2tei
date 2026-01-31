@@ -1,0 +1,19 @@
+services:
+  leximgtotei-converter:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      # The port inside the container (matches the ports mapping)
+      - PORT=8080
+      
+      # The secret key you will use in the X-API-Key header
+      - SERVICE_API_KEY=<secrect key for REST API authentication>
+      
+      # Your Gemini API Key (Best practice: set this in your terminal or a .env file)
+      # You can replace ${GEMINI_API_KEY} with the actual key string for quick testing, 
+      # but don't commit it to version control.
+      - API_KEYS=<comma seperated list of gemini api keys>
+      
+      # Optional: Override the default model
+      - DEFAULT_MODEL=gemini-3-flash-preview
