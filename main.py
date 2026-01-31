@@ -1,11 +1,16 @@
 import os
 import random
 import io
+import logging
 from functools import wraps
-from flask import Flask, request, Response, jsonify
+from flask import Flask, request, Response, stream_with_context, jsonify
 from google import genai
 from google.genai import types
 from PIL import Image
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -13,14 +18,10 @@ app = Flask(__name__)
 def require_api_key(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Get the expected API key from environment variables
         service_key = os.environ.get("SERVICE_API_KEY")
-        
-        # Safety check: if the server key isn't set, block requests to prevent accidental open access
         if not service_key:
             return jsonify({"error": "Server configuration error: SERVICE_API_KEY not set"}), 500
 
-        # Check the request header
         request_key = request.headers.get("X-API-Key")
         if request_key and request_key == service_key:
             return f(*args, **kwargs)
@@ -28,7 +29,7 @@ def require_api_key(f):
             return jsonify({"error": "Unauthorized: Invalid or missing API Key"}), 401
     return decorated_function
 
-# System Instruction
+# Enhanced System Instruction for Strictness
 SYSTEM_INSTRUCTION = """
 You are the Chief Digitization Officer and TEI (Text Encoding Initiative) Architect specializing in historical Malayalam Lexicons and Manuscripts.
 Your mission is to produce high-fidelity, archival-grade TEI P5 XML from scanned images.
@@ -106,84 +107,99 @@ Use this structure **ONLY** when distinct headwords and definitions are visible:
 """
 
 def get_api_key():
-    """Selects a random API key from environment variables API_KEYS or API_KEY."""
     raw_keys = os.environ.get("API_KEYS") or os.environ.get("API_KEY")
     if not raw_keys:
         return None
-    
     keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
     return random.choice(keys)
 
 @app.route("/convert", methods=["POST"])
 @require_api_key
 def convert_to_tei():
-    # 1. Setup API Client
     api_key = get_api_key()
     if not api_key:
-        return jsonify({"error": "Configuration Error: API_KEY or API_KEYS environment variable not set."}), 500
+        return jsonify({"error": "Configuration Error: API_KEY not set."}), 500
 
     client = genai.Client(api_key=api_key)
 
-    # 2. Check for file upload
     if 'file' not in request.files:
-        return jsonify({"error": "No file part in the request"}), 400
+        return jsonify({"error": "No file uploaded"}), 400
     
     file = request.files['file']
     if file.filename == '':
         return jsonify({"error": "No file selected"}), 400
 
     try:
-        # Read image from memory
         image_bytes = file.read()
         img = Image.open(io.BytesIO(image_bytes))
     except Exception as e:
         return jsonify({"error": f"Invalid image file: {str(e)}"}), 400
 
-    # 3. Get Model from query params or env or default
-    model_name = request.args.get("model") or os.environ.get("DEFAULT_MODEL", "gemini-2.0-flash")
+    # Default to 1.5-pro for better accuracy (less hallucination), even if slower.
+    # Flash models (2.0-flash) are faster but prone to hallucinations on dense text.
+    model_name = request.args.get("model") or os.environ.get("DEFAULT_MODEL", "gemini-1.5-pro")
 
-    # 4. Generate Content
-    try:
-        # Note: Depending on the specific google-genai SDK version, 
-        # passing the PIL image directly usually works.
-        response = client.models.generate_content(
-            model=model_name,
-            contents=[
-                "Convert this document image to archival TEI P5 XML following the strict skeleton provided. Extract headers, tables, prose, and entries accurately.",
-                img
-            ],
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-                temperature=0.1,
+    # Safety Settings: BLOCK_NONE is critical for historical text.
+    # Filters often mistake archaic religious or cultural terms for policy violations,
+    # leading to empty responses or hallucinations.
+    safety_settings = [
+        types.SafetySetting(
+            category="HARM_CATEGORY_HATE_SPEECH",
+            threshold="BLOCK_NONE"
+        ),
+        types.SafetySetting(
+            category="HARM_CATEGORY_DANGEROUS_CONTENT",
+            threshold="BLOCK_NONE"
+        ),
+        types.SafetySetting(
+            category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            threshold="BLOCK_NONE"
+        ),
+        types.SafetySetting(
+            category="HARM_CATEGORY_HARASSMENT",
+            threshold="BLOCK_NONE"
+        )
+    ]
+
+    def generate():
+        try:
+            # FIX: Use generate_content_stream method instead of stream=True parameter
+            response = client.models.generate_content_stream(
+                model=model_name,
+                contents=[
+                    "Transcribe this page into valid TEI XML strictly following the system instructions. Do not use Markdown.",
+                    img
+                ],
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    temperature=0.1, # 0.0 forces the model to select the most probable token (less creative/hallucinatory)
+                    safety_settings=safety_settings
+                )
             )
-        )
-        
-        xml_content = response.text.strip()
-        
-        # Clean up any potential markdown wrapping
-        if xml_content.startswith("```xml"):
-            xml_content = xml_content.replace("```xml", "", 1)
-        if xml_content.endswith("```"):
-            xml_content = xml_content.rsplit("```", 1)[0]
-        
-        xml_content = xml_content.strip()
 
-        # Return as XML file
-        return Response(
-            xml_content, 
-            mimetype="application/xml",
-            headers={"Content-Disposition": f"attachment; filename={file.filename}.xml"}
-        )
+            for chunk in response:
+                # Basic filter to strip markdown if the model ignores the prompt
+                text = chunk.text
+                if text:
+                    # Remove common markdown artifacts if they appear in chunks
+                    text = text.replace("```xml", "").replace("```", "")
+                    yield text
 
-    except Exception as e:
-        app.logger.error(f"GenAI Error: {e}")
-        return jsonify({"error": f"AI Processing failed: {str(e)}"}), 500
+        except Exception as e:
+            logger.error(f"GenAI Stream Error: {e}")
+            yield f"\n<!-- Error during processing: {str(e)} -->"
+
+    # Return a streamed response
+    return Response(
+        stream_with_context(generate()), 
+        mimetype="application/xml",
+        headers={"Content-Disposition": f"attachment; filename={file.filename}.xml"}
+    )
 
 @app.route("/health", methods=["GET"])
 def health_check():
     return jsonify({"status": "healthy"}), 200
 
 if __name__ == "__main__":
-    # Local development
     port = int(os.environ.get("PORT", 8080))
     app.run(debug=True, host="0.0.0.0", port=port)
