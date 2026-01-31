@@ -49,11 +49,13 @@ Before tagging, analyze the visual layout of the page section:
 2.  **Columnar Logic**: Use <cb n="1"/> and <cb n="2"/> to mark the start of columns.
 3.  **Malayalam Fidelity**: Transcribe Malayalam text exactly. Preserve archaic ligatures and complex conjuncts.
 4.  **Phonetic Transcription**: Transcribe Latin phonetic text with complex diacritics (ā, ī, ū, ṛ, ḷ, ṉ, ṇ, ñ, ś, ṣ, ṯ, etc.) exactly. Do not normalize.
+5.  **Damage and Illegibility**: If a character or word is partially visible or damaged, use <unclear reason="[ink-blot|faded|torn]">[best guess]</unclear>. If it is entirely illegible, use <gap reason="illegible" quantity="1" unit="chars"/>. Do not guess entire words. Accuracy means faithfully representing the source, including its damage.
+6.  **Structure Minimalism**: When classifying content, choose the simpler, more generic tag (<p>, <list>) over the more complex one (<entry>, <table>) if the visual evidence is ambiguous.
 
 ### HANDLING NON-LEXICAL CONTENT (Prose & Tables)
 * **Prose/Paragraphs**: If the text is a preface, introduction, or narrative, strictly use <p>. Do not look for <orth> or <sense> inside standard sentences.
 * **Tables**: If the image contains a grid or tabular data:
-    * Use <table> to wrap the content.
+    * Use <table> **only for data explicitly aligned in vertical and horizontal columns, typically with ruled lines or clear, consistent whitespace alignment**.
     * Use <row> for horizontal lines.
     * Use <cell> for individual data points.
 * **Lists**: Use <list> and <item> for non-dictionary vertical lists.
@@ -73,15 +75,17 @@ Use this structure **ONLY** when distinct headwords and definitions are visible:
     * Inside <cit>, use <quote> for the example text.
     * Inside <cit>, use <bibl> for the source/author of the quote.
 * <etym>: Etymology.
+**Structure follows content**: Only use the sub-elements of <entry> (<pos>, <etym>, <cit>) if the corresponding data is **visibly present on the page**. Do not add empty elements or infer missing data.
 
 ### ANTI-HALLUCINATION PROTOCOLS
 1.  **Do NOT generate <entry> tags for introductory text.** If the page is an "Introduction," simply use <head> and <p>.
 2.  **Do NOT invent structure.** If a section is just a list of names or numbers, use a <table> or <list>, not a dictionary entry.
 3.  If the page contains **mixed content** (e.g., a paragraph followed by a table), transcribe them sequentially using the appropriate distinct tags.
+4.  **When in doubt**: If you cannot clearly distinguish between a complex list/table and a dictionary entry, prefer the simpler structure (<list> or <table>). The <entry> structure is reserved for **unambiguously self-contained lexical units**.
 
 ### OUTPUT SPECIFICATIONS
 1.  **Format**: Return valid, raw XML only. No Markdown code blocks (no triple backticks).
-2.  **Dynamic Metadata**: You must identify the visible page number from the image and replace [INSERT PAGE NUMBER] in the header below.
+2.  **Dynamic Metadata**: You must identify the visible page number from the image and replace [INSERT PAGE NUMBER] in the header below. If no page number is visible, use `[n.p.]`. If the page is unnumbered but part of an inferred sequence (e.g., first page of a preface), you may use `[unnumbered]`. Do not guess numerical page numbers.
 3.  **Strict Skeleton**: You must strictly follow this root structure (note the xmlns attribute):
 
 <?xml version="1.0" encoding="UTF-8"?>
